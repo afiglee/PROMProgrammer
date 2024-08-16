@@ -16,10 +16,18 @@
 #include <stdio.h>
 //#include <pic18f26k22.h>
 
-#define PROG_OFF PORTCbits.RC5 = 0;
-#define PROG_ON PORTCbits.RC5 = 1;
-#define CS_ON PORTCbits.RC2 = 1;
-#define CS_OFF PORTCbits.RC2 = 0;
+#define PROG_OFF    PORTBbits.RB3 = 0;
+#define PROG_ON     PORTBbits.RB3 = 1;
+#define CS_ON       PORTCbits.RC2 = 0;
+#define CS_OFF      PORTCbits.RC2 = 1;
+#define CLR_OFF     PORTCbits.RC4 = 1;
+#define CLR_ON      PORTCbits.RC4 = 0;
+#define SER         PORTCbits.RC5
+#define CLK_OFF     PORTCbits.RC3 = 0;
+#define CLK_PULSE   PORTCbits.RC3 = 1; PORTCbits.RC3 = 0;
+#define LED_OFF     PORTBbits.RB5 = 1;
+#define LED_ON      PORTBbits.RB5 = 0;
+#define RD_DATA     PORTBbits.RB4
 
 #define NOT_HEX(A) ((A < '0' || A > 'f') || \
         (A > 'F' && A < 'a') || \
@@ -106,6 +114,7 @@ void __interrupt() isr(void)
             TXREG1 = _buf_out.buffer[_buf_out.seek++];
         }
     } /*else*/ if (PIR1bits.RC1IF) {
+        
         uint8_t data = RCREG1;
         TXREG1 = data;
         if (_flags & FLAG_CMD_IN) {
@@ -137,18 +146,18 @@ void wait_timer()
 }
 
 void set_addr(uint8_t new_addr) {
+    CLR_ON
+    CLR_OFF     
     _addr = new_addr;
-    if (new_addr & 0x80) {
-        PORTCbits.RC1 = 0;
-    } else {
-        PORTCbits.RC1 = 1;
-    }
-    if (new_addr & 0x40) {
-        PORTCbits.RC0 = 0;
-    } else {
-        PORTCbits.RC0 = 1;
-    }
-    PORTB = (new_addr ^ 0x3F);
+    for (uint8_t cnt = 0; cnt < 8; cnt++) {
+        if (new_addr & 0x80) {
+            SER = 1;
+        } else {
+            SER = 0;
+        }
+        CLK_PULSE
+        new_addr <<= 1;        
+    }        
 }
 
 void init()
@@ -159,11 +168,15 @@ void init()
     ANSELA = 0;
     ANSELB = 0;
     ANSELC = 0;
-    TRISA = 0;
-    TRISB = 0xC0;
-    TRISC = 0xC8;
     PROG_OFF
-    CS_OFF //PORTC = 0x08; //inverse output
+    CS_OFF 
+    CLR_OFF
+    CLK_OFF
+    LED_OFF
+    TRISA = 0;
+    TRISB = 0xD0;
+    TRISC = 0xC0;
+    
     set_addr(0);
     //init timer
     // 1msec interrupt
@@ -219,23 +232,10 @@ uint8_t step_up_voltage()
     return 1;
 }
 
-void set_bit(uint8_t data) 
+void set_bit_address(uint8_t data) 
 {
-    if (data & 0x01) {
-        PORTAbits.RA3 = 1;
-    } else {
-        PORTAbits.RA3 = 0;
-    }
-    if (data & 0x02) {
-        PORTAbits.RA4 = 1;
-    } else {
-        PORTAbits.RA4 = 0;
-    }
-    if (data & 0x04) {
-        PORTAbits.RA5 = 1;
-    } else {
-        PORTAbits.RA5 = 0;
-    }
+    PORTB &= 0xF8; //clear
+    PORTB |= (data & 0x07);
 }
 
 uint8_t write_byte(uint8_t addr, uint8_t bits)
@@ -248,7 +248,7 @@ uint8_t write_byte(uint8_t addr, uint8_t bits)
         if ((bits & (1<<tt))) {
             lower_voltage();
             // write bit
-            set_bit(tt);
+            set_bit_address(tt);
             //CS activate
             if (_mode == MODE_RT4) {
                 CS_ON //PORTCbits.RC2 = 0;
@@ -265,7 +265,7 @@ uint8_t write_byte(uint8_t addr, uint8_t bits)
                 
                 PROG_OFF
                 // check bit
-                uint8_t rd = PORTCbits.RC3;
+                uint8_t rd = RD_DATA;
                 if (rd == 0) {
                     //ok, all good, set bit
                     ret &= ~(1<<tt);
@@ -291,14 +291,14 @@ uint8_t read_byte(uint8_t address) {
     
     for (uint8_t tt = 0; tt < 8; tt++) {
         uint8_t seek = 0;
-        set_bit(tt);
+        set_bit_address(tt);
         //CS activate
         CS_ON //PORTCbits.RC2 = 0;
         while (seek++ < 10);        
         /*asm("nop"); 
         asm("nop");
         asm("nop");*/
-        uint8_t rd = PORTCbits.RC3;
+        uint8_t rd = RD_DATA;
         if (rd == 0) {
             //ok, all good, set bit
             ret |= (1<<tt);
@@ -491,19 +491,15 @@ void main(void) {
     TXSTA1bits.TXEN = 1;
     PIE1bits.TX1IE = 1;
     
+    
     while(1) {
         PORTAbits.RA0 = !PORTAbits.RA0;
         if (_flags & FLAG_CMD_IN) {
             _flags &= ~FLAG_CMD_IN;
+            LED_ON
             on_cmd();
         }
-            PROG_ON
-            // 100 ms pulse
-            start_timer();
-            wait_timer();
-            PROG_OFF
-            start_timer();
-            wait_timer();
+            
         /*if (TXSTA1bits.TXEN == 0) {
             buf_out.seek = 0;
             TXSTA1bits.TXEN = 1;
