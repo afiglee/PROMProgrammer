@@ -242,6 +242,7 @@ uint8_t write_byte(uint8_t addr, uint8_t bits)
 {
     _flags &= ~FLAG_READY;
     uint8_t ret = 0xFF;
+    
     set_addr(addr);
     //uint8_t seek = 0;
     for (uint8_t tt = 0; tt < 8; tt++) {
@@ -294,10 +295,11 @@ uint8_t read_byte(uint8_t address) {
         set_bit_address(tt);
         //CS activate
         CS_ON //PORTCbits.RC2 = 0;
-        while (seek++ < 10);        
-        /*asm("nop"); 
+        while (seek++ < 10) {        
+        asm("nop"); 
         asm("nop");
-        asm("nop");*/
+        asm("nop");
+        }
         uint8_t rd = RD_DATA;
         if (rd == 0) {
             //ok, all good, set bit
@@ -423,12 +425,13 @@ void on_cmd() {
         }
         addr = hex2uint8(&_cmd_buf[2]);
         uint8_t data = hex2uint8(&_cmd_buf[5]);
-        uint8_t ret = write_byte(addr, data);
-        //TODO print success or error
-        if (ret == data) {
-            print_result(OK, data);
+        write_byte(addr, data);
+        uint8_t ret = read_byte(addr);
+        if ((_mode == MODE_RT4 && (ret & 0x0F) == (data & 0x0F)) ||
+            _mode == MODE_RE3 && ret == data) {
+            print_result(OK, ret);
         } else {
-            print_result(ERR, data);
+            print_result(ERR, ret);
         }
     } else if (strncmp(_cmd_buf, "r ", 2) == 0) {
         if (strlen(_cmd_buf) < 5) {
@@ -453,7 +456,7 @@ void on_cmd() {
         for (size_t cycle = 0; cycle < cycles; cycle++) {
             char mem[54];
             HEX2CHAR(cycle,mem[0]);
-            //mem[0] = cycle + '0';
+
             mem[1] = '0';
             mem[2] = ' ';
             mem[3] = ' ';
@@ -474,7 +477,19 @@ void on_cmd() {
             PRINT(&mem[0]);
             PRINT("\n");
         }
-        
+    } else if (strncmp(_cmd_buf, "b", 1) == 0) { 
+        if (_cmd_buf[1] == 0x0A || _cmd_buf[1] == 0x0D || _cmd_buf[1] == 0) {
+            CS_OFF;
+        } else {
+            if (!check_hex(&_cmd_buf[2])) {
+                print_help("bit - no hex bis\n");
+                return;            
+            }
+            uint8_t bits = hex2uint8(&_cmd_buf[2]) & 0x7;
+            set_bit_address(bits);
+            CS_ON;
+            print_result(OK, bits);
+        }
     } else {
         print_help("Invalid command\n");
     }
@@ -487,7 +502,7 @@ void main(void) {
     
     
     _flags |= FLAG_READY;
-    strcpy((char*) &_buf_out.buffer[0], "testing.. "__TIME__"\n\r");
+    strcpy((char*) &_buf_out.buffer[0], "Version as of "__DATE__" "__TIME__"\n\r");
     TXSTA1bits.TXEN = 1;
     PIE1bits.TX1IE = 1;
     
@@ -498,6 +513,7 @@ void main(void) {
             _flags &= ~FLAG_CMD_IN;
             LED_ON
             on_cmd();
+            LED_OFF
         }
             
         /*if (TXSTA1bits.TXEN == 0) {
