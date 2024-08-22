@@ -71,7 +71,7 @@ const uint8_t FLAG_READY = 0x08;
 const uint8_t ERR = 0;
 const uint8_t OK = 1;
 
-#define CMD_LEN  54
+#define CMD_LEN  74
 
 uint8_t _mode = MODE_RT4;
 uint8_t _addr = 0;
@@ -108,12 +108,11 @@ void __interrupt() isr(void)
     } else if (PIR1bits.TX1IF) {
         PIR1bits.TX1IF = 0;
         if (_buf_out.buffer[_buf_out.seek] == 0) {
-            //TXSTA1bits.TXEN = 0;
             PIE1bits.TX1IE = 0;
         } else {
             TXREG1 = _buf_out.buffer[_buf_out.seek++];
         }
-    } /*else*/ if (PIR1bits.RC1IF) {
+    }if (PIR1bits.RC1IF) {
         
         uint8_t data = RCREG1;
         TXREG1 = data;
@@ -122,12 +121,16 @@ void __interrupt() isr(void)
             // skip characters until we finish processing
             return;
         }
-        _buf_in.buffer[_buf_in.seek++] = data;
-        if (data == 0x0A /*0x0D*/ || _buf_in.seek == CMD_LEN) {
-            _flags |= FLAG_CMD_IN;
+        
+        if (data == 0x0A  || data == 0x0D || _buf_in.seek == CMD_LEN) {
             _buf_in.buffer[_buf_in.seek] = 0;
+            if (_buf_in.seek > 0) { //non-empty line
+                _flags |= FLAG_CMD_IN;
+                strcpy((char*) &_cmd_buf[0], (char*) &_buf_in.buffer[0]);
+            }
             _buf_in.seek = 0;
-            strcpy((char*) &_cmd_buf[0], (char*) &_buf_in.buffer[0]);
+        } else {
+            _buf_in.buffer[_buf_in.seek++] = data;
         }
     }
 }
@@ -206,30 +209,6 @@ void init()
     PIE1bits.TX1IE = 0;
     PIE1bits.RC1IE = 1;
     
-    //DAC
-    VREFCON2bits.DACR = 0;
-    VREFCON1bits.DACPSS = 0; //VREF = VDD
-    VREFCON1bits.DACLPS = 1;
-    VREFCON1bits.DACNSS = 0;
-    VREFCON1bits.DACEN = 1; //Enable DAC
-    VREFCON1bits.DACOE = 1;
-    
-}
-
-void lower_voltage()
-{
-    VREFCON2bits.DACR = 0;
-}
-
-uint8_t step_up_voltage()
-{
-    uint8_t dac = VREFCON2bits.DACR;
-    dac += DAC_STEP;
-    if ((dac & 0x1F) < VREFCON2bits.DACR) {
-        return 0;
-    }
-    VREFCON2bits.DACR = dac;
-    return 1;
 }
 
 void set_bit_address(uint8_t data) 
@@ -247,39 +226,32 @@ uint8_t write_byte(uint8_t addr, uint8_t bits)
     //uint8_t seek = 0;
     for (uint8_t tt = 0; tt < 8; tt++) {
         if ((bits & (1<<tt))) {
-            lower_voltage();
             // write bit
             set_bit_address(tt);
             //CS activate
             if (_mode == MODE_RT4) {
                 CS_ON //PORTCbits.RC2 = 0;
             }
-            //turn on Programming voltage
-            //PORTCbits.RC5 = 1;
-            uint8_t not_good = 1;        
-            while(not_good) {
-                PROG_ON
-                
-                // 100 ms pulse
-                start_timer();
-                wait_timer();
-                
-                PROG_OFF
-                // check bit
-                uint8_t rd = RD_DATA;
-                if (rd == 0) {
-                    //ok, all good, set bit
-                    ret &= ~(1<<tt);
-                    break;
-                }
-                not_good = step_up_voltage();
+            PROG_ON
+
+            // 100 ms pulse
+            start_timer();
+            wait_timer();
+
+            PROG_OFF
+            // check bit
+            uint8_t rd = RD_DATA;
+            if (rd == 0) {
+                //ok, all good, set bit
+                ret &= ~(1<<tt);
+                break;
             }
+
             if (_mode == MODE_RT4) {
                 CS_OFF
             }
         }
     }
-    lower_voltage();
     _flags |= FLAG_READY;
     return ret;
 }
@@ -294,7 +266,7 @@ uint8_t read_byte(uint8_t address) {
         uint8_t seek = 0;
         set_bit_address(tt);
         //CS activate
-        CS_ON //PORTCbits.RC2 = 0;
+        CS_ON
         while (seek++ < 10) {        
         asm("nop"); 
         asm("nop");
@@ -311,7 +283,7 @@ uint8_t read_byte(uint8_t address) {
     return ret;    
 }
 
-void print_help(const char *msg)
+void print(const char *msg)
 {
     PRINT(msg);
 }
@@ -319,10 +291,10 @@ void print_help(const char *msg)
 void print_mode() {
     switch (_mode) {
         case MODE_RT4:
-            PRINT("rt4\n");
+            print("rt4\n");
             break;
         default:
-            PRINT("re3\n");
+            print("re3\n");
     }
 }
 
@@ -347,18 +319,8 @@ void uint8_2hex(uint8_t data, char *p)
 {
     
     uint8_t hex = data >> 4;
-    /*if (hex >= 0x0A) {
-        *p = 'A' + (hex - 0x0A);
-    } else {
-        *p = '0' + hex;
-    }*/
     HEX2CHAR(hex,*p);
     hex = data & 0x0F;
-    /*if (hex >= 0x0A) {
-        *p = 'A' + (hex - 0x0A);
-    } else {
-        *p = '0' + hex;
-    }*/
     HEX2CHAR(hex,*(p+1));
 }
 
@@ -399,10 +361,24 @@ void print_result(uint8_t result, uint8_t data)
     ENABLE_TX
 }
 
+void print_help() {
+    print("Version as of "__DATE__" "__TIME__"\n");
+    print("Firmware located at https://github.com/afiglee/PROMProgrammer\n");
+    print("Hardware PCB and schematic at https://github.com/afiglee/RE3RT4Prog\n");
+    print("Commands:\n");
+    print("h<Enter> - help\n");
+    print("m<Enter> - toggle mode re3/rt4\n");
+    print("R<Enter> - read entire chip\n");
+    print("r AA<Enter> - read hexadecimal value at hexadecimal address AA\n");
+    print("w AA dd<Enter> - write hexadecimal value dd to hexadecimal address AA\n");
+}
+
 void on_cmd() {
     while ((_flags & FLAG_READY) == 0);
     uint8_t addr = 0;
-    if (strncmp(_cmd_buf, "m", 1) == 0) {
+    if (_cmd_buf[0] == 'h' && _cmd_buf[1] == 0) {
+        print_help();
+    } else if (_cmd_buf[0] == 'm' && _cmd_buf[1] == 0) {
         if (_mode == MODE_RT4) {
             _mode = MODE_RE3;
         } else {
@@ -412,15 +388,15 @@ void on_cmd() {
     } else if (strncmp(_cmd_buf, "w ", 2) == 0) {
         //write byte
         if (strlen(_cmd_buf) < 7) {
-            print_help("write - no address\n");
+           print("write - no address\n");
             return;
         }
         if (!check_hex(&_cmd_buf[2])) {
-            print_help("write - non hex address\n");
+            print("write - non hex address\n");
             return;            
         }
         if (!check_hex(&_cmd_buf[5])) {
-            print_help("write - non hex data\n");
+            print("write - non hex data\n");
             return;            
         }
         addr = hex2uint8(&_cmd_buf[2]);
@@ -435,18 +411,18 @@ void on_cmd() {
         }
     } else if (strncmp(_cmd_buf, "r ", 2) == 0) {
         if (strlen(_cmd_buf) < 5) {
-            print_help("read no address\n");
+            print("read no address\n");
             return;
         }
         if (!check_hex(&_cmd_buf[2])) {
-            print_help("read - no hex address\n");
+            print("read - no hex address\n");
             return;            
         }
         addr = hex2uint8(&_cmd_buf[2]);
         uint8_t data = read_byte(addr);
         //TODO print result
         print_result(OK, data);
-    } else if (strncmp(_cmd_buf, "R ", 2) == 0) {
+    } else if (_cmd_buf[0] == 'R' && _cmd_buf[1] == 0) {
         // wait for serial
         addr = 0;
         uint8_t cycles = 0x02;
@@ -454,7 +430,7 @@ void on_cmd() {
             cycles = 0x10;
         }
         for (size_t cycle = 0; cycle < cycles; cycle++) {
-            char mem[54];
+            char mem[CMD_LEN];
             HEX2CHAR(cycle,mem[0]);
 
             mem[1] = '0';
@@ -474,15 +450,16 @@ void on_cmd() {
                 mem[seek++] = ' ';
             }
             mem[seek] = 0;
-            PRINT(&mem[0]);
-            PRINT("\n");
+            print(&mem[0]);
+            print("\n");
         }
+#ifdef RESEARCH        
     } else if (strncmp(_cmd_buf, "b", 1) == 0) { 
         if (_cmd_buf[1] == 0x0A || _cmd_buf[1] == 0x0D || _cmd_buf[1] == 0) {
             CS_OFF;
         } else {
             if (!check_hex(&_cmd_buf[2])) {
-                print_help("bit - no hex bis\n");
+                print("bit - no hex bis\n");
                 return;            
             }
             uint8_t bits = hex2uint8(&_cmd_buf[2]) & 0x7;
@@ -490,58 +467,25 @@ void on_cmd() {
             CS_ON;
             print_result(OK, bits);
         }
+#endif        
     } else {
-        print_help("Invalid command\n");
+        print("Invalid command\n");
     }
 }
 
 void main(void) {
     init();
-    lower_voltage();
-    uint8_t old_flags = 0;
     
-    
-    _flags |= FLAG_READY;
-    strcpy((char*) &_buf_out.buffer[0], "Version as of "__DATE__" "__TIME__"\n\r");
-    TXSTA1bits.TXEN = 1;
-    PIE1bits.TX1IE = 1;
-    
+    _flags |= FLAG_READY; 
+    print("RT4/RE3 programmer; type h<Enter> for help\n");
     
     while(1) {
-        PORTAbits.RA0 = !PORTAbits.RA0;
         if (_flags & FLAG_CMD_IN) {
             _flags &= ~FLAG_CMD_IN;
             LED_ON
             on_cmd();
             LED_OFF
         }
-            
-        /*if (TXSTA1bits.TXEN == 0) {
-            buf_out.seek = 0;
-            TXSTA1bits.TXEN = 1;
-        }*/
-        /*
-        if (_flags & FLAG_DELAY_STOP) {
-            PORTCbits.RC2 = 0;
-            _flags &= ~FLAG_DELAY_STOP;
-            uint16_t kk = 0;
-            while (kk < 4096) {
-                kk++;
-            }
-        } else if ((_flags & (FLAG_DELAY_START)) == 0){
-            PORTCbits.RC2 = 1;
-            start_timer();
-            wait_timer();
-        }*//*
-            PORTCbits.RC2 = 1;
-            start_timer();
-            wait_timer();
-            PORTCbits.RC2 = 0;
-            uint16_t kk = 0;
-            while (kk < 4096) {
-                kk++;
-            }
-        */
     }
     return;
 }
