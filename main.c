@@ -14,11 +14,12 @@
 #include <string.h>
 #include <stdint.h>
 #include <stdio.h>
-//#include <pic18f26k22.h>
+#include <myPic18StdLib.h>
 
 #define PROG_OFF    PORTBbits.RB3 = 0;
 #define PROG_ON     PORTBbits.RB3 = 1;
 #define CS_ON       PORTCbits.RC2 = 0;
+#define CS_IS_ON    PORTCbits.RC2 == 0
 #define CS_OFF      PORTCbits.RC2 = 1;
 #define CLR_OFF     PORTCbits.RC4 = 1;
 #define CLR_ON      PORTCbits.RC4 = 0;
@@ -29,9 +30,7 @@
 #define LED_ON      PORTBbits.RB5 = 0;
 #define RD_DATA     PORTBbits.RB4
 
-#define NOT_HEX(A) ((A < '0' || A > 'f') || \
-        (A > 'F' && A < 'a') || \
-        (A > '9' && A < 'A'))
+
 
 #define PRINT(A) while(PIE1bits.TX1IE); \
                  strcpy((char*) _buf_out.buffer, A); \
@@ -41,12 +40,6 @@
             
 #define ENABLE_TX TXSTA1bits.TXEN = 1; \
                   PIE1bits.TX1IE = 1;
-
-#define HEX2CHAR(hex,ch) if (hex >= 0x0A) {\
-        ch = 'A' + (hex - 0x0A);\
-    } else {\
-        ch = '0' + hex;\
-    }
 
 #define DAC_STEP 2
 
@@ -65,8 +58,23 @@ const uint8_t FLAG_DELAY_STOP = 0x02;
 const uint8_t FLAG_CMD_IN = 0x04;
 const uint8_t FLAG_READY = 0x08;
 
-#define MODE_RE3 1
-#define MODE_RT4 2
+typedef struct s_chip {
+    const char *name;
+    uint8_t cs_on;
+    uint8_t data_width;
+    uint8_t address_bits; //1 - 2 bytes, 2 - 4 bytes, 3 - 8 bytes, 4 - 16, 5 - 32, 
+                          //6 - 64, 7 - 128, 8 - 256, 9 - 512..
+}t_chip;
+
+t_chip chips[] = {
+    {"RE3", 0, 0xFF, 5},
+    {"RT4", 1, 0x0F, 8},
+    {"RT5", 1, 0xFF, 9}
+};
+
+#define MODE_RE3 0
+#define MODE_RT4 1
+#define MODE_RT5 2   
 
 const uint8_t ERR = 0;
 const uint8_t OK = 1;
@@ -74,7 +82,7 @@ const uint8_t OK = 1;
 #define CMD_LEN  74
 
 uint8_t _mode = MODE_RT4;
-uint8_t _addr = 0;
+uint16_t _addr = 0;
 uint8_t _flags = 0;
 uint8_t _delay_ms = 0;
 
@@ -148,19 +156,21 @@ void wait_timer()
     _flags &= ~FLAG_DELAY_STOP;
 }
 
-void set_addr(uint8_t new_addr) {
+void set_addr(uint16_t new_addr) {
     CLR_ON
     CLR_OFF     
     _addr = new_addr;
-    for (uint8_t cnt = 0; cnt < 8; cnt++) {
-        if (new_addr & 0x80) {
-            SER = 1;
-        } else {
-            SER = 0;
+    if (new_addr) {
+        for (uint8_t cnt = 0; cnt < 16; cnt++) {
+            if (new_addr & 0x8000) {
+                SER = 1;
+            } else {
+                SER = 0;
+            }
+            CLK_PULSE
+            new_addr <<= 1;        
         }
-        CLK_PULSE
-        new_addr <<= 1;        
-    }        
+    }
 }
 
 void init()
@@ -217,11 +227,11 @@ void set_bit_address(uint8_t data)
     PORTB |= (data & 0x07);
 }
 
-uint8_t write_byte(uint8_t addr, uint8_t bits)
+uint8_t write_byte(uint16_t addr, uint8_t bits)
 {
     _flags &= ~FLAG_READY;
     uint8_t ret = 0xFF;
-    
+    CS_OFF
     set_addr(addr);
     //uint8_t seek = 0;
     for (uint8_t tt = 0; tt < 8; tt++) {
@@ -229,7 +239,7 @@ uint8_t write_byte(uint8_t addr, uint8_t bits)
             // write bit
             set_bit_address(tt);
             //CS activate
-            if (_mode == MODE_RT4) {
+            if (chips[_mode].cs_on) {
                 CS_ON //PORTCbits.RC2 = 0;
             }
             PROG_ON
@@ -242,12 +252,16 @@ uint8_t write_byte(uint8_t addr, uint8_t bits)
             // check bit
             uint8_t rd = RD_DATA;
             if (rd == 0) {
+                if (chips[_mode].cs_on) {
+                    CS_OFF
+                }
                 //ok, all good, set bit
+                
                 ret &= ~(1<<tt);
                 break;
             }
 
-            if (_mode == MODE_RT4) {
+            if (chips[_mode].cs_on) {
                 CS_OFF
             }
         }
@@ -256,8 +270,8 @@ uint8_t write_byte(uint8_t addr, uint8_t bits)
     return ret;
 }
 
-uint8_t read_byte(uint8_t address) {
-    
+uint8_t read_byte(uint16_t address) {
+    CS_OFF
     _flags &= ~FLAG_READY;
     uint8_t ret = 0x00;
     set_addr(address);
@@ -289,46 +303,8 @@ void print(const char *msg)
 }
 
 void print_mode() {
-    switch (_mode) {
-        case MODE_RT4:
-            print("rt4\n");
-            break;
-        default:
-            print("re3\n");
-    }
-}
-
-uint8_t hex2uint8(char* p)
-{
-    uint8_t val = 0;
-    uint8_t steps = 2;
-    while(steps--) {
-        val <<= 4;
-        if (*p <= '9') {
-            val |= *p - '0';
-        } else {
-            *p &= 0x5F;
-            val |= 0xA + (*p - 'A'); 
-        }
-        p++;
-    }
-    return val;
-}
-
-void uint8_2hex(uint8_t data, char *p)
-{
-    
-    uint8_t hex = data >> 4;
-    HEX2CHAR(hex,*p);
-    hex = data & 0x0F;
-    HEX2CHAR(hex,*(p+1));
-}
-
-uint8_t check_hex(char *p) {
-    if (NOT_HEX(*p) || (NOT_HEX(*(p+1)))) {
-        return 0;
-    }
-    return 1;
+    print((chips[_mode].name));
+    print("\n");
 }
 
 void print_result(uint8_t result, uint8_t data)
@@ -367,22 +343,26 @@ void print_help() {
     print("Hardware PCB and schematic at https://github.com/afiglee/RE3RT4Prog\n");
     print("Commands:\n");
     print("h<Enter> - help\n");
-    print("m<Enter> - toggle mode re3/rt4\n");
+    print("m<Enter> - toggle mode re3/rt4/rt5\n");
+#ifdef RESEARCH    
+    print("a [AAA]A<Enter> - set address [AAA]A on chip pins\n"); 
+    print("c<Enter> - toggles CS on chip\n");
+#endif    
     print("R<Enter> - read entire chip\n");
-    print("r AA<Enter> - read hexadecimal value at hexadecimal address AA\n");
-    print("w AA dd<Enter> - write hexadecimal value dd to hexadecimal address AA\n");
+    print("r [AAA]A<Enter> - read hexadecimal value at hexadecimal address [AAA]A\n");
+    print("w [AAA]A [d]d<Enter> - write hexadecimal value [d]d to hexadecimal address [AAA]A\n");
 }
 
 void on_cmd() {
     while ((_flags & FLAG_READY) == 0);
-    uint8_t addr = 0;
+    uint16_t addr = 0;
     if (_cmd_buf[0] == 'h' && _cmd_buf[1] == 0) {
         print_help();
     } else if (_cmd_buf[0] == 'm' && _cmd_buf[1] == 0) {
-        if (_mode == MODE_RT4) {
+        if (_mode == MODE_RT5) {
             _mode = MODE_RE3;
         } else {
-            _mode = MODE_RT4;
+            _mode++;
         }
         print_mode();
     } else if (strncmp(_cmd_buf, "w ", 2) == 0) {
@@ -391,55 +371,55 @@ void on_cmd() {
            print("write - no address\n");
             return;
         }
-        if (!check_hex(&_cmd_buf[2])) {
+        if (!check_hex_uint8(&_cmd_buf[2])) {
             print("write - non hex address\n");
             return;            
         }
-        if (!check_hex(&_cmd_buf[5])) {
+        if (!check_hex_uint8(&_cmd_buf[5])) {
             print("write - non hex data\n");
             return;            
         }
-        addr = hex2uint8(&_cmd_buf[2]);
+        addr = hex2uint16(&_cmd_buf[2]);
         uint8_t data = hex2uint8(&_cmd_buf[5]);
         write_byte(addr, data);
         uint8_t ret = read_byte(addr);
-        if ((_mode == MODE_RT4 && (ret & 0x0F) == (data & 0x0F)) ||
-            _mode == MODE_RE3 && ret == data) {
+        ret &= chips[_mode].data_width;
+        data &= chips[_mode].data_width;
+        if (ret == data) {
             print_result(OK, ret);
         } else {
             print_result(ERR, ret);
         }
     } else if (strncmp(_cmd_buf, "r ", 2) == 0) {
-        if (strlen(_cmd_buf) < 5) {
+        if (strlen(_cmd_buf) < 3) {
             print("read no address\n");
             return;
         }
-        if (!check_hex(&_cmd_buf[2])) {
-            print("read - no hex address\n");
-            return;            
-        }
-        addr = hex2uint8(&_cmd_buf[2]);
+
+        addr = hex2uint16(&_cmd_buf[2]);
         uint8_t data = read_byte(addr);
         //TODO print result
-        print_result(OK, data);
+        uint8_t out[9];
+        uint16_2hex(addr, &out[0]);
+        out[4] = ' ';
+        uint8_2hex(data, &out[5]);
+        out[7] = '\n';
+        out[8] = 0;
+        print(&out[0]);
     } else if (_cmd_buf[0] == 'R' && _cmd_buf[1] == 0) {
         // wait for serial
         addr = 0;
-        uint8_t cycles = 0x02;
-        if (_mode == MODE_RT4) {
-            cycles = 0x10;
-        }
+        uint8_t cycles = 1 << (chips[_mode].address_bits - 4);
         for (size_t cycle = 0; cycle < cycles; cycle++) {
             char mem[CMD_LEN];
-            HEX2CHAR(cycle,mem[0]);
-
-            mem[1] = '0';
-            mem[2] = ' ';
+            uint8_2hex(cycle, &mem[0]);
+            mem[2] = '0';
             mem[3] = ' ';
-            uint8_t seek = 4;
+            mem[4] = ' ';
+            uint8_t seek = 5;
             for (size_t next = 0; next < 16; next++) {
                 uint8_t data = read_byte(addr++);
-                if (_mode == MODE_RT4) {
+                if (chips[_mode].data_width == 4) {
                     mem[seek++] = 'x';
                     HEX2CHAR((data & 0x0F),mem[seek]);
                     seek++;
@@ -453,20 +433,40 @@ void on_cmd() {
             print(&mem[0]);
             print("\n");
         }
-#ifdef RESEARCH        
+#ifdef RESEARCH  
+    } else if (_cmd_buf[0] == "c") {
+      if (CS_IS_ON) {
+          CS_OFF
+          print("OFF\n");        
+      } else {
+          CS_ON
+          print("ON\n");        
+      }  
+    } else if (strncmp(_cmd_buf, "a ", 2) == 0) {
+        if (strlen(_cmd_buf) < 3) {
+            print("read no address\n");
+            return;
+        }
+        addr = hex2uint16(&_cmd_buf[2]);
+        set_addr(addr);
+        uint8_t out[6];
+        uint16_2hex(addr, &out[0]);
+        out[4] = '\n';
+        out[5] = 0;
+        print(&out[0]);
     } else if (strncmp(_cmd_buf, "b", 1) == 0) { 
-        if (_cmd_buf[1] == 0x0A || _cmd_buf[1] == 0x0D || _cmd_buf[1] == 0) {
-            CS_OFF;
-        } else {
-            if (!check_hex(&_cmd_buf[2])) {
+       // if (_cmd_buf[1] == 0x0A || _cmd_buf[1] == 0x0D || _cmd_buf[1] == 0) {
+       //     CS_OFF;
+       // } else {
+            if (!check_hex_uint8(&_cmd_buf[2])) {
                 print("bit - no hex bis\n");
                 return;            
             }
             uint8_t bits = hex2uint8(&_cmd_buf[2]) & 0x7;
             set_bit_address(bits);
-            CS_ON;
+         //   CS_ON;
             print_result(OK, bits);
-        }
+        //}
 #endif        
     } else {
         print("Invalid command\n");
@@ -477,7 +477,7 @@ void main(void) {
     init();
     
     _flags |= FLAG_READY; 
-    print("RT4/RE3 programmer; type h<Enter> for help\n");
+    print("RT4/RT5/RE3 programmer; type h<Enter> for help\n");
     
     while(1) {
         if (_flags & FLAG_CMD_IN) {
