@@ -64,12 +64,14 @@ typedef struct s_chip {
     uint8_t data_width;
     uint8_t address_bits; //1 - 2 bytes, 2 - 4 bytes, 3 - 8 bytes, 4 - 16, 5 - 32, 
                           //6 - 64, 7 - 128, 8 - 256, 9 - 512..
+    uint8_t active_bit_value; // value of programmed bit
+    uint8_t initial_value;
 }t_chip;
 
 t_chip chips[] = {
-    {"RE3", 0, 0xFF, 5},
-    {"RT4", 1, 0x0F, 8},
-    {"RT5", 1, 0xFF, 9}
+    {"RE3", 0, 0xFF, 5, 1, 0x00},
+    {"RT4", 1, 0x0F, 8, 1, 0x00},
+    {"RT5", 1, 0xFF, 9, 0, 0xFF}
 };
 
 #define MODE_RE3 0
@@ -230,12 +232,13 @@ void set_bit_address(uint8_t data)
 uint8_t write_byte(uint16_t addr, uint8_t bits)
 {
     _flags &= ~FLAG_READY;
-    uint8_t ret = 0xFF;
+    uint8_t ret = chips[_mode].initial_value ^ 0xFF;
     CS_OFF
     set_addr(addr);
     //uint8_t seek = 0;
     for (uint8_t tt = 0; tt < 8; tt++) {
-        if ((bits & (1<<tt))) {
+        uint8_t active_bit_value = (bits & (1<<tt)) >> tt;
+        if (active_bit_value == chips[_mode].active_bit_value) {
             // write bit
             set_bit_address(tt);
             //CS activate
@@ -249,15 +252,16 @@ uint8_t write_byte(uint16_t addr, uint8_t bits)
             wait_timer();
 
             PROG_OFF
-            // check bit
-            uint8_t rd = RD_DATA;
-            if (rd == 0) {
+            // check bit - read of RD_DATA is inverse:
+            // 1 reads as 0, 0 as 1        
+            uint8_t rd = (1^RD_DATA);
+            if (rd == chips[_mode].active_bit_value) {
                 if (chips[_mode].cs_on) {
                     CS_OFF
                 }
                 //ok, all good, set bit
                 
-                ret &= ~(1<<tt);
+                ret ^= (1<<tt);
                 break;
             }
 
@@ -434,7 +438,7 @@ void on_cmd() {
             print("\n");
         }
 #ifdef RESEARCH  
-    } else if (_cmd_buf[0] == "c") {
+    } else if (_cmd_buf[0] == 'c') {
       if (CS_IS_ON) {
           CS_OFF
           print("OFF\n");        
