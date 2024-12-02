@@ -50,8 +50,8 @@
 
 // With those values @ 7.3728MHz and prescaler 1:256 
 // timer period would be approximately 50 msec
-const uint8_t TIMER_LOW = 0x00;
-const uint8_t TIMER_HIGH = 0xA6; 
+const uint8_t TIMER_LOW = 0xF6; //0xAB; //0x00;
+const uint8_t TIMER_HIGH = 0xFF; //0xFA; //0xA6; 
 
 const uint8_t FLAG_DELAY_START = 0x01;
 const uint8_t FLAG_DELAY_STOP = 0x02;
@@ -147,6 +147,10 @@ void __interrupt() isr(void)
 
 void start_timer()
 {
+    T0CONbits.TMR0ON = 0;
+    TMR0H = TIMER_HIGH;
+    TMR0L = TIMER_LOW;
+
     _delay_ms = 2;
     _flags |= FLAG_DELAY_START;
     T0CONbits.TMR0ON = 1;
@@ -195,13 +199,13 @@ void init()
     set_addr(0);
     //init timer
     // 1msec interrupt
-    TMR0H = 0xFA;
-    TMR0L = 0xAB;
+    TMR0H = TIMER_HIGH; //0xFA;
+    TMR0L = TIMER_LOW; //0xAB;
     RCONbits.IPEN = 0;
     INTCON = 0xE0;
     T0CON = 0;
-    T0CONbits.T0PS = 1;//7;
-    T0CONbits.PSA = 0; //0x88;
+    T0CONbits.T0PS = 0; //1;//7;
+    T0CONbits.PSA = 1; //0; //0x88;
     
     //init RS232
     //115200 Baud @ 11.0592 MHz
@@ -232,42 +236,39 @@ void set_bit_address(uint8_t data)
 uint8_t write_byte(uint16_t addr, uint8_t bits)
 {
     _flags &= ~FLAG_READY;
-    uint8_t ret = chips[_mode].initial_value ^ 0xFF;
+    uint8_t ret = 0;
     CS_OFF
     set_addr(addr);
     //uint8_t seek = 0;
     for (uint8_t tt = 0; tt < 8; tt++) {
+        set_bit_address(tt);
+        //CS activate
+        if (chips[_mode].cs_on) {
+            CS_ON //PORTCbits.RC2 = 0;
+        }
+
         uint8_t active_bit_value = (bits & (1<<tt)) >> tt;
         if (active_bit_value == chips[_mode].active_bit_value) {
             // write bit
-            set_bit_address(tt);
-            //CS activate
-            if (chips[_mode].cs_on) {
-                CS_ON //PORTCbits.RC2 = 0;
-            }
             PROG_ON
 
-            // 100 ms pulse
+            // 100 uS pulse - 12.5 V should be safe
+            // In experiments chips were writable down to 10.33-11.3V 
+            // with timing 1.25uS (higher voltage) - 25 uS
             start_timer();
             wait_timer();
 
             PROG_OFF
-            // check bit - read of RD_DATA is inverse:
-            // 1 reads as 0, 0 as 1        
-            uint8_t rd = (1^RD_DATA);
-            if (rd == chips[_mode].active_bit_value) {
-                if (chips[_mode].cs_on) {
-                    CS_OFF
-                }
-                //ok, all good, set bit
-                
-                ret ^= (1<<tt);
-                break;
-            }
 
-            if (chips[_mode].cs_on) {
-                CS_OFF
-            }
+        }
+        // check bit - read of RD_DATA is inverse:
+        // 1 reads as 0, 0 as 1        
+        //uint8_t rd = (1^RD_DATA);
+        if (RD_DATA == 0) {
+            ret |= (1<<tt);
+        }
+        if (chips[_mode].cs_on) {
+            CS_OFF
         }
     }
     _flags |= FLAG_READY;
