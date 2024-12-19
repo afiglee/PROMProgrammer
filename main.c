@@ -16,6 +16,9 @@
 #include <stdio.h>
 #include <myPic18StdLib.h>
 
+
+#define VERSION "1.1.20241217"
+
 #define PROG_OFF    PORTBbits.RB3 = 0;
 #define PROG_ON     PORTBbits.RB3 = 1;
 #define CS_ON       PORTCbits.RC2 = 0;
@@ -343,14 +346,20 @@ void print_result(uint8_t result, uint8_t data)
 }
 
 void print_help() {
-    print("Version as of "__DATE__" "__TIME__"\n");
+#ifdef RESEARCH
+    print("Research Version "VERSION" as of "__DATE__" "__TIME__"\n");
+#else    
+    print("Version "VERSION" as of "__DATE__" "__TIME__"\n");
+#endif    
     print("Firmware located at https://github.com/afiglee/PROMProgrammer\n");
     print("Hardware PCB and schematic at https://github.com/afiglee/RE3RT4Prog\n");
     print("Commands:\n");
     print("h<Enter> - help\n");
+    print("V<Enter> - prints version\n");
     print("m<Enter> - toggle mode re3/rt4/rt5\n");
 #ifdef RESEARCH    
     print("a [AAA]A<Enter> - set address [AAA]A on chip pins\n"); 
+    print("b [dd]<Enter> - set bit number; bit must be in range 00..07\n");
     print("c<Enter> - toggles CS on chip\n");
 #endif    
     print("R<Enter> - read entire chip\n");
@@ -358,11 +367,21 @@ void print_help() {
     print("w [AAA]A [d]d<Enter> - write hexadecimal value [d]d to hexadecimal address [AAA]A\n");
 }
 
+void print_prompt() {
+    print("$");
+}
+
+void print_version() {
+    print(VERSION"\n");
+}
+
 void on_cmd() {
     while ((_flags & FLAG_READY) == 0);
     uint16_t addr = 0;
     if (_cmd_buf[0] == 'h' && _cmd_buf[1] == 0) {
         print_help();
+    } else if (_cmd_buf[0] == 'V' && _cmd_buf[1] == 0) {
+        print_version();
     } else if (_cmd_buf[0] == 'm' && _cmd_buf[1] == 0) {
         if (_mode == MODE_RT5) {
             _mode = MODE_RE3;
@@ -374,14 +393,17 @@ void on_cmd() {
         //write byte
         if (strlen(_cmd_buf) < 7) {
            print("write - no address\n");
-            return;
+           print_prompt();
+           return;
         }
         if (!check_hex_uint8(&_cmd_buf[2])) {
             print("write - non hex address\n");
+            print_prompt();
             return;            
         }
         if (!check_hex_uint8(&_cmd_buf[5])) {
             print("write - non hex data\n");
+            print_prompt();
             return;            
         }
         addr = hex2uint16(&_cmd_buf[2]);
@@ -398,6 +420,7 @@ void on_cmd() {
     } else if (strncmp(_cmd_buf, "r ", 2) == 0) {
         if (strlen(_cmd_buf) < 3) {
             print("read no address\n");
+            print_prompt();
             return;
         }
 
@@ -450,6 +473,7 @@ void on_cmd() {
     } else if (strncmp(_cmd_buf, "a ", 2) == 0) {
         if (strlen(_cmd_buf) < 3) {
             print("read no address\n");
+            print_prompt();
             return;
         }
         addr = hex2uint16(&_cmd_buf[2]);
@@ -465,6 +489,7 @@ void on_cmd() {
        // } else {
             if (!check_hex_uint8(&_cmd_buf[2])) {
                 print("bit - no hex bis\n");
+                print_prompt();
                 return;            
             }
             uint8_t bits = hex2uint8(&_cmd_buf[2]) & 0x7;
@@ -476,6 +501,7 @@ void on_cmd() {
     } else {
         print("Invalid command\n");
     }
+    print_prompt();
 }
 
 void main(void) {
@@ -483,7 +509,7 @@ void main(void) {
     
     _flags |= FLAG_READY; 
     print("RT4/RT5/RE3 programmer; type h<Enter> for help\n");
-    
+    print_prompt();
     while(1) {
         if (_flags & FLAG_CMD_IN) {
             _flags &= ~FLAG_CMD_IN;
